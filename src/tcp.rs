@@ -38,10 +38,12 @@ use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::Message;
 use x25519_dalek::x25519;
 
+use crate::authorized;
 use crate::idfile;
 use crate::proto::{
-    build_peer_frame, derive_session, make_qr, pack_inner, verify_and_decrypt, xor_header, Identity,
-    Peer, CMD_TCP_CLOSE, CMD_TCP_DATA, CMD_TCP_OPEN,
+    build_peer_frame, decode_intro_from, decode_server_frame, derive_session, make_qr, pack_inner,
+    verify_and_decrypt, xor_header, Identity, Peer, CMD_INTRO_FROM, CMD_TCP_CLOSE, CMD_TCP_DATA,
+    CMD_TCP_OPEN,
 };
 use crate::relay::{self, Relay};
 

@@ -41,6 +41,13 @@ pub const CMD_SUBSCRIBE: u8 = 0x40;
 #[allow(dead_code)]
 pub const CMD_PEER_ONLINE: u8 = 0x42;
 pub const CMD_INTRODUCE: u8 = 0x46;
+/// Server→client: "here are <sender>'s public keys + nick". Emitted by the
+/// relay when some other party sends a CMD_INTRODUCE targeting us. The body is
+/// [sender_x_pub:32][sender_ed_pub:32][nick_utf8...]. This is how the receiver
+/// learns an initiator's identity *without* having its invite up front — the
+/// foundation of capability "accept-incoming" mode. The relay fills the keys
+/// from the sender's verified session, so the introduction cannot be forged.
+pub const CMD_INTRO_FROM: u8 = 0x47;
 
 // ============================ identity / crypto ============================
 
@@ -233,6 +240,24 @@ pub fn decode_qr(qr: &str) -> anyhow::Result<Peer> {
     let mut id = [0u8; 8];
     id.copy_from_slice(&x_pub[..8]);
     let nick = String::from_utf8_lossy(&raw[64..]).to_string();
+    Ok(Peer { x_pub, ed_pub, id, nick })
+}
+
+/// Build a `Peer` from a CMD_INTRO_FROM body: [x_pub:32][ed_pub:32][nick...].
+///
+/// Used by capability "accept-incoming" mode: when the relay tells us an
+/// initiator's keys, this turns that body into the same `Peer` we'd otherwise
+/// have decoded from an invite. The keys come from the relay's verified view of
+/// the sender's session, so they identify the real initiator.
+pub fn decode_intro_from(body: &[u8]) -> anyhow::Result<Peer> {
+    if body.len() < 64 {
+        anyhow::bail!("intro_from body too short");
+    }
+    let x_pub: [u8; 32] = body[..32].try_into().unwrap();
+    let ed_pub = VerifyingKey::from_bytes(&body[32..64].try_into().unwrap())?;
+    let mut id = [0u8; 8];
+    id.copy_from_slice(&x_pub[..8]);
+    let nick = String::from_utf8_lossy(&body[64..]).to_string();
     Ok(Peer { x_pub, ed_pub, id, nick })
 }
 
