@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+# usbws-mount <invite>  — one-command USB-over-relay mount for the dev side.
+#
+# Background: the wsusb gate (phone) shares whatever USB devices the user
+# plugs into its OTG port; the dev box pulls them in through an encrypted
+# relay and they appear locally as /dev/ttyUSB*, /dev/ttyACM*, /dev/bus/usb/*.
+# That normally takes two manual steps: usbws tcp-listen + usbip attach.
+# This wrapper bundles both, picks up new devices, prints what was created
+# and on Ctrl+C tears it all down cleanly.
+#
+# Usage:
+#   usbws-mount K037B-rKf...
+#
+# What it does:
+#   1. Starts `usbws tcp-listen` against the given peer invite (background).
+#   2. Waits for "tunnel ready" in the usbws log.
+#   3. Lists exported USB devices via `usbip list -r 127.0.0.1`.
+#   4. Attaches every exported device with `sudo usbip attach`.
+#   5. Shows what new /dev nodes appeared.
+#   6. Blocks until you press Ctrl+C; on exit detaches everything and stops
+#      the tunnel.
+#
+# Requires: usbws, usbip (linux-tools-generic or distribution equivalent),
+# sudo, vhci_hcd kernel module (auto-loaded on first attach).
+
+set -uo pipefail
+
+USBWS_BIN="${USBWS_BIN:-/home/opt/Claude/usbws/target/release/usbws}"
+PORT="${USBWS_PORT:-3240}"
+LOG="/tmp/usbws-mount.$$.log"
+
+if [ $# -lt 1 ]; then
+    echo "usage: $(basename "$0") <peer-invite>" >&2
+    echo "       (peer invite is the K0... string shown by the wsusb app on" >&2
+    echo "        the phone — give us your invite, we give the phone ours.)" >&2
+    exit 2
+fi
+
+INVITE="$1"
+if [[ ! "$INVITE" =~ ^K0 ]]; then
+    echo "$0: not a peer invite (expected K0...): $INVITE" >&2
+    exit 2
+fi
+
+if ! command -v usbip >/dev/null 2>&1; then
+    echo "$0: usbip not found — install 'linux-tools-generic' or your distro's usbip package" >&2
+    exit 3
+fi
+
+if [ ! -x "$USBWS_BIN" ]; then
+    echo "$0: usbws binary not found at $USBWS_BIN (override with USBWS_BIN env)" >&2
+    exit 3
+fi
+
+# Track what we attached so we can detach exactly that on cleanup.
+ATTACHED_BUSIDS=()
+USBWS_PID=
+
+cleanup() {
+    local code=$?
+    echo
+    echo "[usbws-mount] cleaning up…"
+    # Detach all ports we created. `usbip port` shows current attachments —
+    # find the port numbers tied to remote bus 127.0.0.1.
+    if command -v sudo >/dev/null; then
+        local ports
+        ports=$(sudo usbip port 2>/dev/null | awk '/^Port [0-9]+:/{p=$2} /usbip:\/\/127\.0\.0\.1/{print p}' | tr -d ':')
+        for p in $ports; do
+            sudo usbip detach -p "$p" >/dev/null 2>&1 || true
+        done
+    fi
+    # Stop the tunnel.
+    if [ -n "$USBWS_PID" ] && kill -0 "$USBWS_PID" 2>/dev/null; then
+        kill "$USBWS_PID" 2>/dev/null || true
+        wait "$USBWS_PID" 2>/dev/null || true
+    fi
+    rm -f "$LOG"
+    echo "[usbws-mount] done."
+    exit "$code"
+}
+trap cleanup EXIT INT TERM
+
+# Snapshot existing /dev/ttyUSB* and /dev/ttyACM* so we can diff later and
+# report only the newly-appeared device nodes.
+existing_devs() {
+    ls /dev/ttyUSB* /dev/ttyACM* 2>/dev/null | sort
+}
+DEVS_BEFORE=$(existing_devs)
+
+# 1. Start the tunnel in the background.
+echo "[usbws-mount] starting tunnel (peer ${INVITE:0:16}…) on 127.0.0.1:$PORT"
+"$USBWS_BIN" tcp-listen "$PORT" --peer "$INVITE" >"$LOG" 2>&1 &
+USBWS_PID=$!
+
+# 2. Wait for "tunnel ready".
+for _ in $(seq 1 60); do
+    if grep -q "tunnel ready" "$LOG" 2>/dev/null; then break; fi
+    if ! kill -0 "$USBWS_PID" 2>/dev/null; then
+        echo "[usbws-mount] usbws exited before tunnel was ready — log:" >&2
+        cat "$LOG" >&2
+        exit 4
+    fi
+    sleep 0.25
+done
+if ! grep -q "tunnel ready" "$LOG"; then
+    echo "[usbws-mount] timed out waiting for tunnel — log:" >&2
+    cat "$LOG" >&2
+    exit 5
+fi
+echo "[usbws-mount] tunnel up."
+
+# 3. List exported devices.
+LIST=$(timeout 8 usbip list -r 127.0.0.1 2>&1 || true)
+echo "$LIST"
+
+# Extract bus IDs (lines like "        1-5:" — leading whitespace + N-N:).
+mapfile -t BUSIDS < <(echo "$LIST" | grep -oE '^[[:space:]]+[0-9]+-[0-9.]+:' | tr -d ' :' | sort -u)
+
+if [ ${#BUSIDS[@]} -eq 0 ]; then
+    echo "[usbws-mount] no devices exported by peer (is anything plugged into the OTG port?)" >&2
+    # Don't exit — stay up so the user can re-plug; cleanup runs on Ctrl+C.
+fi
+
+# 4. Attach each.
+for busid in "${BUSIDS[@]}"; do
+    echo "[usbws-mount] attaching $busid…"
+    if sudo usbip attach -r 127.0.0.1 -b "$busid" 2>&1; then
+        ATTACHED_BUSIDS+=("$busid")
+    fi
+done
+
+# 5. Report newly-appeared device nodes.
+sleep 2
+DEVS_AFTER=$(existing_devs)
+NEW_DEVS=$(comm -13 <(echo "$DEVS_BEFORE") <(echo "$DEVS_AFTER") 2>/dev/null)
+if [ -n "$NEW_DEVS" ]; then
+    echo "[usbws-mount] new device nodes:"
+    echo "$NEW_DEVS"
+else
+    echo "[usbws-mount] no new ttyUSB/ttyACM appeared — check 'lsusb' (the device may be a class without a tty driver, e.g. ST-Link)."
+fi
+
+echo "[usbws-mount] ready. Press Ctrl+C to unmount and stop the tunnel."
+
+# 6. Block until interrupted. Keep the tunnel alive.
+wait "$USBWS_PID"
