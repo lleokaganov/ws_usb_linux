@@ -395,6 +395,7 @@ async fn session_loop(
                 msg = ws.next() => {
                     match msg {
                         Some(Ok(Message::Binary(b))) => {
+                            eprintln!("[usbws][dbg] ws->us binary len={}", b.len());
                             handle_incoming(&ctx, k_s2c, &b, &dial_target).await;
                         }
                         Some(Ok(Message::Ping(p))) => { let _ = ws.send(Message::Pong(p)).await; }
@@ -466,11 +467,20 @@ async fn handle_incoming(
     }
     let conn_id = body[0];
 
+    // DEBUG: log every incoming command so we can see exactly what reaches the
+    // peer and what gets routed where (turn off once attach stabilises).
+    eprintln!("[usbws][dbg] incoming cmd=0x{:02x} conn={} body_len={}",
+              cmd, conn_id, body.len());
+
     match cmd {
         CMD_TCP_OPEN => {
             // Only the connect side acts on OPEN (it has a dial target). The
             // listen side allocated the id locally and ignores echoes.
-            let Some(target) = dial_target.clone() else { return };
+            let Some(target) = dial_target.clone() else {
+                eprintln!("[usbws][dbg] OPEN conn={}: no dial_target (listen side)", conn_id);
+                return;
+            };
+            eprintln!("[usbws][dbg] OPEN conn={}: dialing {}", conn_id, target);
             open_outbound(ctx.clone(), conn_id, target).await;
         }
         CMD_TCP_DATA => {
@@ -484,9 +494,12 @@ async fn handle_incoming(
             if let Some(tx) = tx {
                 // If the socket writer is gone, drop + notify peer to stop.
                 if tx.send(WrMsg::Data(payload.to_vec())).await.is_err() {
+                    eprintln!("[usbws][dbg] DATA conn={}: writer gone, sending CLOSE", conn_id);
                     ctx.conns.lock().await.remove(&conn_id);
                     let _ = ctx.send_peer(CMD_TCP_CLOSE, &[conn_id]).await;
                 }
+            } else {
+                eprintln!("[usbws][dbg] DATA conn={}: no writer registered (dropped)", conn_id);
             }
             // Unknown conn_id: silently drop (peer raced past a CLOSE).
         }
@@ -509,6 +522,7 @@ async fn handle_incoming(
 /// Dial the fixed target and register the resulting socket under `conn_id`.
 /// Used by the tcp-connect side when it receives CMD_TCP_OPEN.
 async fn open_outbound(ctx: Arc<Ctx>, conn_id: u8, target: String) {
+    eprintln!("[usbws][dbg] open_outbound: connecting to {} (conn={})", target, conn_id);
     match TcpStream::connect(&target).await {
         Ok(sock) => {
             spawn_connection(ctx.clone(), conn_id, sock).await;
