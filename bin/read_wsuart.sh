@@ -16,6 +16,8 @@
 #   INVITE=K0... ./read_wsuart.sh
 #   ./read_wsuart.sh --hex          # show bytes as hex (xxd) for binary streams
 
+clear
+
 set -u
 cd "$(dirname "$0")"
 
