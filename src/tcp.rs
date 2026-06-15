@@ -216,7 +216,9 @@ pub async fn run_tcp_connect_accept(target: &str, nick: &str) -> anyhow::Result<
         hex::encode(me.id),
     );
     eprintln!("[usbws] my invite (give to the initiator): {}", make_qr(&me, nick));
-    {
+    if std::env::var("USBWS_NO_PINNING").map(|v| v == "1").unwrap_or(false) {
+        eprintln!("[usbws] no-pinning mode: any initiator with the invite is accepted");
+    } else {
         let table = authorized::load().unwrap_or_default();
         if table.is_empty() {
             eprintln!(
