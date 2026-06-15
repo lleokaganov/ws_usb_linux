@@ -306,7 +306,22 @@ pub async fn run_tcp_connect_accept(target: &str, nick: &str) -> anyhow::Result<
 /// authorized-table policy (TOFU when empty, allowlist when non-empty). On
 /// acceptance returns Some(peer) (and appends to the table under TOFU); on
 /// rejection logs and returns None.
+///
+/// When the env var `USBWS_NO_PINNING=1` is set, the table is ignored entirely
+/// — every initiator that knows our invite is accepted, nothing is persisted.
+/// This is what wsusb (the Android gate) uses: it's a lab tool whose only
+/// "secret" is the invite itself, and the TOFU pinning friction (silently
+/// rejecting an owner after they re-installed the app) is not worth the
+/// theoretical leak protection.
 fn authorize_initiator(peer: Peer) -> Option<Peer> {
+    if std::env::var("USBWS_NO_PINNING").map(|v| v == "1").unwrap_or(false) {
+        eprintln!(
+            "[usbws] no-pinning: accepting initiator {} ({})",
+            hex::encode(peer.id),
+            peer.nick,
+        );
+        return Some(peer);
+    }
     let table = match authorized::load() {
         Ok(t) => t,
         Err(e) => {
