@@ -4,6 +4,12 @@ clear
 set -u
 
 TTY_PORT="/dev/ttyUSB0"
+
+pkill -9 -f "cat ${TTY_PORT}"
+
+exit
+
+
 echo "port=${TTY_PORT}"
 
 stty -F "$TTY_PORT" 115200 cs8 -cstopb -parenb -crtscts clocal raw -echo \
@@ -17,3 +23,6 @@ cat "$TTY_PORT" &
 
 CAT_PID=$!
 wait "$CAT_PID"
+
+pkill -9 -f "cat ${TTY_PORT}"
+echo "OOOK"
