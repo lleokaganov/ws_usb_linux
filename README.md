@@ -1,4 +1,8 @@
-# usbws
+# ws_usb_linux
+
+> The Linux side of the remote-USB bridge. The CLI binary is still named
+> `usbws` (Cargo package unchanged); the Android gate app lives separately in
+> the `wsusb` project.
 
 Tunnel a serial port **or a TCP port** between two machines over the encrypted
 ws_server relay (protocol v2). Serial covers `/dev/ttyUSB*` / `/dev/ttyACM*`;
